@@ -1,0 +1,45 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    -webkit-tap-highlight-color: transparent;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-zinc-50 text-zinc-900 antialiased;
+  }
+}
+
+/* Sembunyikan seluruh scrollbar pada semua elemen tanpa menonaktifkan scroll */
+*,
+*::before,
+*::after,
+html,
+body {
+  -ms-overflow-style: none !important;
+  scrollbar-width: none !important;
+}
+
+*::-webkit-scrollbar,
+*::before::-webkit-scrollbar,
+*::after::-webkit-scrollbar,
+html::-webkit-scrollbar,
+body::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  background: transparent !important;
+}
+
+/* Smooth Gojek-style gliding transition for Leaflet cart marker */
+.leaflet-marker-icon.angkut-cart-icon {
+  transition: transform 1.8s linear !important;
+}
+
+/* Offset Leaflet zoom controls below floating mobile Scan QR pill */
+.angkut-citizen-map .leaflet-top.leaflet-left {
+  top: 52px;
+}

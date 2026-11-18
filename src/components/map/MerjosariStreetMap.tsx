@@ -152,11 +152,17 @@ export function MerjosariStreetMap({
     const dotColor = isTpsCongested ? "#e11d48" : "#10b981";
     const icon = L.divIcon({
       className: "angkut-cart-icon",
-      iconSize: [110, 32],
-      iconAnchor: [55, 16],
-      html: `<div style="display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:9999px;background:#09090b;color:#fff;font-size:11px;font-weight:700;box-shadow:0 4px 12px rgba(0,0,0,0.32);border:2px solid ${dotColor};white-space:nowrap;">
-        <span style="width:7px;height:7px;border-radius:9999px;background:${dotColor};display:inline-block;"></span>
-        <span>${cart.cartCode}</span>
+      iconSize: [36, 36],
+      iconAnchor: [18, 18],
+      html: `<div title="${cart.cartCode}" style="position:relative;width:36px;height:36px;border-radius:9999px;background:#09090b;color:#ffffff;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 12px rgba(0,0,0,0.34);border:2.5px solid ${dotColor};cursor:pointer;">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2"/>
+          <path d="M15 18H9"/>
+          <path d="M19 18h2a1 1 0 0 0 1-1v-3.65a1 1 0 0 0-.22-.624l-3.48-4.35A1 1 0 0 0 17.52 8H14"/>
+          <circle cx="17" cy="18" r="2"/>
+          <circle cx="7" cy="18" r="2"/>
+        </svg>
+        <span style="position:absolute;top:-2px;right:-2px;width:9px;height:9px;border-radius:9999px;background:${dotColor};border:2px solid #ffffff;"></span>
       </div>`,
     });
 
@@ -243,10 +249,10 @@ export function MerjosariStreetMap({
       const isSelected = bin.id === selectedBinId;
 
       const accentColor = isOverdue ? "#e11d48" : "#059669";
-      const borderColor = isSelected ? "#10b981" : accentColor;
-      const bgColor = isSelected ? "#09090b" : "#ffffff";
-      const textColor = isSelected ? "#ffffff" : "#09090b";
-      const iconBg = isSelected ? "#10b981" : accentColor;
+      const bgColor = isSelected ? "#09090b" : accentColor;
+      const borderColor = isSelected ? "#10b981" : "#ffffff";
+      const badgeSize = isSelected ? 32 : 28;
+      const svgSize = isSelected ? 14 : 12;
 
       L.circle([bin.coordinates.lat, bin.coordinates.lng], {
         radius: 14,
@@ -262,17 +268,14 @@ export function MerjosariStreetMap({
           className: "",
           iconSize: [0, 0],
           iconAnchor: [0, 0],
-          html: `<div style="transform:translate(-50%,-50%);display:inline-flex;align-items:center;gap:5px;padding:3px 8px 3px 4px;border-radius:9999px;background:${bgColor};color:${textColor};border:2px solid ${borderColor};box-shadow:0 3px 10px rgba(0,0,0,0.22);font-size:10px;font-weight:700;white-space:nowrap;cursor:pointer;">
-            <span style="width:18px;height:18px;border-radius:9999px;background:${iconBg};color:#ffffff;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;">
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M3 6h18"/>
-                <path d="M8 6V4h8v2"/>
-                <path d="M19 6l-1 14H6L5 6"/>
-                <path d="M10 11v6"/>
-                <path d="M14 11v6"/>
-              </svg>
-            </span>
-            <span>${bin.shortLabel}</span>
+          html: `<div title="${bin.name} (${bin.shortLabel})" style="transform:translate(-50%,-50%);width:${badgeSize}px;height:${badgeSize}px;border-radius:9999px;background:${bgColor};color:#ffffff;border:2.5px solid ${borderColor};box-shadow:0 3px 10px rgba(0,0,0,0.25);display:inline-flex;align-items:center;justify-content:center;cursor:pointer;">
+            <svg width="${svgSize}" height="${svgSize}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M3 6h18"/>
+              <path d="M8 6V4h8v2"/>
+              <path d="M19 6l-1 14H6L5 6"/>
+              <path d="M10 11v6"/>
+              <path d="M14 11v6"/>
+            </svg>
           </div>`,
         }),
       }).addTo(group);

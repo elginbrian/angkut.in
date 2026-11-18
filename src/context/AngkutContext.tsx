@@ -50,6 +50,8 @@ export interface BinManagementPayload {
   binCondition: BinCondition;
   binTypeLabel: string;
   monthlyFeeBase: number;
+  lat?: number;
+  lng?: number;
 }
 
 export interface DwellInfo {
@@ -649,7 +651,16 @@ export function AngkutProvider({ children }: { children: React.ReactNode }) {
       const newId = generateTsidCode(existingIds);
       const waypointIdx =
         (bins.length * 7 + 4) % Math.max(1, routeWaypoints.length - 2);
-      const [lat, lng] = routeWaypoints[waypointIdx] ?? routeWaypoints[0];
+      const [fallbackLat, fallbackLng] =
+        routeWaypoints[waypointIdx] ?? routeWaypoints[0];
+      const lat =
+        typeof payload.lat === "number" && Number.isFinite(payload.lat)
+          ? payload.lat
+          : fallbackLat;
+      const lng =
+        typeof payload.lng === "number" && Number.isFinite(payload.lng)
+          ? payload.lng
+          : fallbackLng;
       const incentiveEligible =
         payload.binCondition === "TERTUTUP_LAYAK" && payload.monthlyFeeBase > 0;
 
@@ -724,6 +735,15 @@ export function AngkutProvider({ children }: { children: React.ReactNode }) {
           const incentiveEligible =
             nextCondition === "TERTUTUP_LAYAK" && nextFeeBase > 0;
 
+          const nextLat =
+            typeof payload.lat === "number" && Number.isFinite(payload.lat)
+              ? payload.lat
+              : b.coordinates.lat;
+          const nextLng =
+            typeof payload.lng === "number" && Number.isFinite(payload.lng)
+              ? payload.lng
+              : b.coordinates.lng;
+
           return {
             ...b,
             name: payload.name !== undefined ? payload.name.trim() : b.name,
@@ -740,6 +760,7 @@ export function AngkutProvider({ children }: { children: React.ReactNode }) {
                 ? payload.ownerPhone.trim()
                 : b.ownerPhone,
             assignedCartCode: payload.assignedCartCode ?? b.assignedCartCode,
+            coordinates: { lat: nextLat, lng: nextLng },
             binCondition: nextCondition,
             binTypeLabel:
               payload.binTypeLabel !== undefined

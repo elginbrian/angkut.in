@@ -5,6 +5,7 @@ import {
   CheckCheck,
   CheckCircle2,
   ClipboardList,
+  Crosshair,
   MapPin,
   MessageCircle,
   Pencil,
@@ -18,6 +19,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import { BinCoordinatePickerMap } from "@/components/map/BinCoordinatePickerMap";
 import { MerjosariStreetMap } from "@/components/map/MerjosariStreetMap";
 import { QrStickerModal } from "@/components/warga/QrStickerModal";
 import {
@@ -31,6 +33,11 @@ import type { BinCondition, GeoQrBin } from "@/types/angkut";
 type RtRwTab = "monitoring" | "bins_management";
 type RtFilter = "ALL" | "RT 01" | "RT 02";
 
+const DEFAULT_BIN_COORDS = {
+  lat: -7.94685,
+  lng: 112.60345,
+};
+
 const EMPTY_BIN_FORM: BinManagementPayload = {
   name: "",
   address: "",
@@ -41,6 +48,8 @@ const EMPTY_BIN_FORM: BinManagementPayload = {
   binCondition: "TERTUTUP_LAYAK",
   binTypeLabel: "Tong Tertutup 80L (1 Unit)",
   monthlyFeeBase: 30000,
+  lat: DEFAULT_BIN_COORDS.lat,
+  lng: DEFAULT_BIN_COORDS.lng,
 };
 
 export function RtRwPortalApp() {
@@ -70,6 +79,14 @@ export function RtRwPortalApp() {
   const [formOpen, setFormOpen] = useState(false);
   const [editingBin, setEditingBin] = useState<GeoQrBin | null>(null);
   const [binForm, setBinForm] = useState<BinManagementPayload>(EMPTY_BIN_FORM);
+  const [latInput, setLatInput] = useState<string>(
+    String(DEFAULT_BIN_COORDS.lat)
+  );
+  const [lngInput, setLngInput] = useState<string>(
+    String(DEFAULT_BIN_COORDS.lng)
+  );
+  const [coordError, setCoordError] = useState<string | null>(null);
+  const [gpsLoading, setGpsLoading] = useState(false);
 
   const rtRwReports = reports.filter(
     (r) =>
@@ -107,13 +124,85 @@ export function RtRwPortalApp() {
   ).length;
   const issueBinCount = bins.length - compliantCount;
 
+  const applyFormCoordinates = (nextLat: number, nextLng: number) => {
+    const fixedLat = Number(nextLat.toFixed(6));
+    const fixedLng = Number(nextLng.toFixed(6));
+    setBinForm((f) => ({ ...f, lat: fixedLat, lng: fixedLng }));
+    setLatInput(fixedLat.toFixed(6));
+    setLngInput(fixedLng.toFixed(6));
+    setCoordError(null);
+  };
+
+  const handleManualCoordChange = (field: "lat" | "lng", raw: string) => {
+    const normalized = raw.replace(",", ".");
+    if (field === "lat") {
+      setLatInput(normalized);
+    } else {
+      setLngInput(normalized);
+    }
+
+    const trimmed = normalized.trim();
+    if (!trimmed || trimmed === "-" || trimmed === "." || trimmed === "-.") {
+      return;
+    }
+    const parsed = Number(trimmed);
+    const inRange =
+      field === "lat"
+        ? parsed >= -90 && parsed <= 90
+        : parsed >= -180 && parsed <= 180;
+    if (Number.isFinite(parsed) && inRange) {
+      setBinForm((f) => ({ ...f, [field]: parsed }));
+      setCoordError(null);
+    }
+  };
+
+  const handleUseDeviceGps = () => {
+    if (typeof navigator === "undefined" || !navigator.geolocation) {
+      setCoordError("Perangkat/browser ini tidak mendukung GPS.");
+      return;
+    }
+    setGpsLoading(true);
+    setCoordError(null);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setGpsLoading(false);
+        applyFormCoordinates(pos.coords.latitude, pos.coords.longitude);
+      },
+      () => {
+        setGpsLoading(false);
+        setCoordError(
+          "Gagal mengambil lokasi GPS. Pastikan izin lokasi diaktifkan atau pilih titik di peta."
+        );
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  };
+
+  const handleCenterDefaultArea = () => {
+    const anchor = bins[0]?.coordinates ?? DEFAULT_BIN_COORDS;
+    applyFormCoordinates(anchor.lat, anchor.lng);
+  };
+
   const openCreateModal = () => {
+    const anchor = bins[0]?.coordinates ?? DEFAULT_BIN_COORDS;
+    const initialLat = Number(anchor.lat.toFixed(6));
+    const initialLng = Number(anchor.lng.toFixed(6));
     setEditingBin(null);
-    setBinForm(EMPTY_BIN_FORM);
+    setBinForm({
+      ...EMPTY_BIN_FORM,
+      lat: initialLat,
+      lng: initialLng,
+    });
+    setLatInput(initialLat.toFixed(6));
+    setLngInput(initialLng.toFixed(6));
+    setCoordError(null);
+    setGpsLoading(false);
     setFormOpen(true);
   };
 
   const openEditModal = (bin: GeoQrBin) => {
+    const initialLat = Number(bin.coordinates.lat.toFixed(6));
+    const initialLng = Number(bin.coordinates.lng.toFixed(6));
     setEditingBin(bin);
     setBinForm({
       name: bin.name,
@@ -125,7 +214,13 @@ export function RtRwPortalApp() {
       binCondition: bin.binCondition,
       binTypeLabel: bin.binTypeLabel,
       monthlyFeeBase: bin.monthlyFeeBase,
+      lat: initialLat,
+      lng: initialLng,
     });
+    setLatInput(initialLat.toFixed(6));
+    setLngInput(initialLng.toFixed(6));
+    setCoordError(null);
+    setGpsLoading(false);
     setFormOpen(true);
   };
 
@@ -133,10 +228,34 @@ export function RtRwPortalApp() {
     e.preventDefault();
     if (!binForm.name.trim() || !binForm.address.trim()) return;
 
+    const parsedLat = Number(latInput.trim().replace(",", "."));
+    const parsedLng = Number(lngInput.trim().replace(",", "."));
+    if (
+      !latInput.trim() ||
+      !lngInput.trim() ||
+      !Number.isFinite(parsedLat) ||
+      !Number.isFinite(parsedLng) ||
+      parsedLat < -90 ||
+      parsedLat > 90 ||
+      parsedLng < -180 ||
+      parsedLng > 180
+    ) {
+      setCoordError(
+        "Koordinat tidak valid. Latitude harus -90 s/d 90 dan Longitude -180 s/d 180."
+      );
+      return;
+    }
+
+    const payload: BinManagementPayload = {
+      ...binForm,
+      lat: Number(parsedLat.toFixed(6)),
+      lng: Number(parsedLng.toFixed(6)),
+    };
+
     if (editingBin) {
-      updateGeoQrBin(editingBin.id, binForm);
+      updateGeoQrBin(editingBin.id, payload);
     } else {
-      addGeoQrBin(binForm);
+      addGeoQrBin(payload);
     }
     setFormOpen(false);
     setEditingBin(null);
@@ -561,7 +680,9 @@ export function RtRwPortalApp() {
                                   {bin.name}
                                 </p>
                                 <p className="font-mono text-[11px] text-zinc-400">
-                                  {bin.id}
+                                  {bin.id} •{" "}
+                                  {bin.coordinates.lat.toFixed(5)},{" "}
+                                  {bin.coordinates.lng.toFixed(5)}
                                 </p>
                               </td>
                               <td className="whitespace-nowrap px-4 py-3.5">
@@ -679,7 +800,7 @@ export function RtRwPortalApp() {
           aria-modal="true"
           aria-label={editingBin ? "Edit Titik Tong Sampah" : "Tambah Tong Sampah"}
         >
-          <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-white shadow-2xl">
+          <div className="max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-2xl bg-white shadow-2xl">
             <div className="sticky top-0 z-10 flex items-center justify-between border-b border-zinc-100 bg-white px-5 py-4">
               <div>
                 <h3 className="text-sm font-bold text-zinc-900">
@@ -860,6 +981,88 @@ export function RtRwPortalApp() {
                     placeholder="Contoh: Tong Tertutup 80L (2 Unit)"
                     className="w-full rounded-xl border border-zinc-200 px-3 py-2 text-zinc-900 outline-none focus:border-zinc-900"
                   />
+                </div>
+
+                {/* Coordinate Picker Map & Manual Lat/Lng */}
+                <div className="space-y-2.5 rounded-2xl border border-zinc-200 bg-zinc-50/70 p-3.5 sm:col-span-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5">
+                      <MapPin className="h-3.5 w-3.5 text-emerald-700" />
+                      <span className="font-semibold text-zinc-900">
+                        Titik Koordinat Lokasi (Pilih di Peta atau Input Manual)
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={handleUseDeviceGps}
+                        disabled={gpsLoading}
+                        className="inline-flex items-center gap-1 rounded-lg border border-zinc-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-zinc-800 transition hover:border-emerald-500 hover:bg-emerald-50/60 disabled:opacity-60"
+                      >
+                        <Crosshair className="h-3 w-3 text-emerald-700" />
+                        <span>
+                          {gpsLoading ? "Mengambil GPS..." : "Gunakan GPS Saya"}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleCenterDefaultArea}
+                        className="rounded-lg border border-zinc-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-zinc-600 transition hover:bg-zinc-100 hover:text-zinc-900"
+                      >
+                        Pusatkan RW 12
+                      </button>
+                    </div>
+                  </div>
+
+                  <BinCoordinatePickerMap
+                    lat={binForm.lat ?? DEFAULT_BIN_COORDS.lat}
+                    lng={binForm.lng ?? DEFAULT_BIN_COORDS.lng}
+                    editingBinId={editingBin?.id ?? null}
+                    onChange={applyFormCoordinates}
+                    heightClass="h-48"
+                  />
+
+                  <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                    <div>
+                      <label className="mb-1 block text-[11px] font-semibold text-zinc-700">
+                        Latitude (Garis Lintang)
+                      </label>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        required
+                        value={latInput}
+                        onChange={(e) =>
+                          handleManualCoordChange("lat", e.target.value)
+                        }
+                        placeholder="-7.946850"
+                        className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 font-mono text-xs text-zinc-900 outline-none focus:border-zinc-900"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-[11px] font-semibold text-zinc-700">
+                        Longitude (Garis Bujur)
+                      </label>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        required
+                        value={lngInput}
+                        onChange={(e) =>
+                          handleManualCoordChange("lng", e.target.value)
+                        }
+                        placeholder="112.603450"
+                        className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 font-mono text-xs text-zinc-900 outline-none focus:border-zinc-900"
+                      />
+                    </div>
+                  </div>
+
+                  {coordError && (
+                    <p className="rounded-lg bg-rose-50 px-2.5 py-1.5 text-[11px] font-medium text-rose-700">
+                      {coordError}
+                    </p>
+                  )}
                 </div>
               </div>
 

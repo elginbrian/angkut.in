@@ -4,27 +4,31 @@ import React, { useEffect, useRef, useState } from "react";
 import type LType from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { useAngkut } from "@/context/AngkutContext";
-import { TPS_MERJOSARI_COORDS } from "@/data/mock-merjosari";
 import { cn } from "@/lib/utils";
 
 interface MerjosariStreetMapProps {
   heightClass?: string;
   interactiveSelect?: boolean;
   focusSelectedBin?: boolean;
+  focusCart?: boolean;
   onBinClick?: (binId: string) => void;
+  onMapClick?: (lat: number, lng: number) => void;
 }
 
 export function MerjosariStreetMap({
   heightClass = "h-72",
   interactiveSelect = true,
   focusSelectedBin = false,
+  focusCart = false,
   onBinClick,
+  onMapClick,
 }: MerjosariStreetMapProps) {
   const {
     bins,
     selectedBinId,
     selectBin,
     cart,
+    tpsCoords,
     routeWaypoints,
     cartWaypointIndex,
     isTpsCongested,
@@ -37,6 +41,8 @@ export function MerjosariStreetMap({
   const routeLayerRef = useRef<LType.LayerGroup | null>(null);
   const cartMarkerRef = useRef<LType.Marker | null>(null);
   const leafletRef = useRef<typeof LType | null>(null);
+  const onMapClickRef = useRef(onMapClick);
+  onMapClickRef.current = onMapClick;
 
   // Initialize Leaflet map once
   useEffect(() => {
@@ -66,23 +72,12 @@ export function MerjosariStreetMap({
       staticLayerRef.current = L.layerGroup().addTo(map);
       mapRef.current = map;
 
-      // Initialize persistent smooth-moving cart marker
-      const cartIcon = L.divIcon({
-        className: "angkut-cart-icon",
-        iconSize: [110, 32],
-        iconAnchor: [55, 16],
-        html: `<div style="display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:9999px;background:#09090b;color:#fff;font-size:11px;font-weight:700;box-shadow:0 4px 12px rgba(0,0,0,0.32);border:2px solid #34d399;white-space:nowrap;">
-          <span style="width:7px;height:7px;border-radius:9999px;background:#34d399;display:inline-block;"></span>
-          <span>${cart.cartCode}</span>
-        </div>`,
+      map.on("click", (e: LType.LeafletMouseEvent) => {
+        if (onMapClickRef.current) {
+          onMapClickRef.current(e.latlng.lat, e.latlng.lng);
+        }
       });
 
-      const marker = L.marker([cart.coordinates.lat, cart.coordinates.lng], {
-        icon: cartIcon,
-        zIndexOffset: 600,
-      }).addTo(map);
-
-      cartMarkerRef.current = marker;
       setMapReady(true);
 
       // Trigger size recalibration after mount
@@ -105,14 +100,31 @@ export function MerjosariStreetMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Update street-contour route lines & persistent cart position smoothly
+  // Update street-contour route lines & live Web Mock IoT cart marker
   useEffect(() => {
     const L = leafletRef.current;
+    const map = mapRef.current;
     const routeGroup = routeLayerRef.current;
-    const cartMarker = cartMarkerRef.current;
-    if (!mapReady || !L || !routeGroup || !cartMarker) return;
+    if (!mapReady || !L || !map || !routeGroup) return;
 
     routeGroup.clearLayers();
+
+    if (!cart.coordinates) {
+      if (routeWaypoints.length >= 2) {
+        L.polyline(routeWaypoints, {
+          color: "#52525b",
+          weight: 3.5,
+          opacity: 0.55,
+          dashArray: "6 7",
+          lineJoin: "round",
+        }).addTo(routeGroup);
+      }
+      if (cartMarkerRef.current) {
+        map.removeLayer(cartMarkerRef.current);
+        cartMarkerRef.current = null;
+      }
+      return;
+    }
 
     const traveledPoints = routeWaypoints.slice(0, cartWaypointIndex + 1);
     const remainingPoints = routeWaypoints.slice(cartWaypointIndex);
@@ -137,34 +149,53 @@ export function MerjosariStreetMap({
       }).addTo(routeGroup);
     }
 
-    // Smoothly glide existing cart marker to new road coordinate
-    cartMarker.setLatLng([cart.coordinates.lat, cart.coordinates.lng]);
     const dotColor = isTpsCongested ? "#e11d48" : "#10b981";
-    cartMarker.setIcon(
-      L.divIcon({
-        className: "angkut-cart-icon",
-        iconSize: [110, 32],
-        iconAnchor: [55, 16],
-        html: `<div style="display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:9999px;background:#09090b;color:#fff;font-size:11px;font-weight:700;box-shadow:0 4px 12px rgba(0,0,0,0.32);border:2px solid ${dotColor};white-space:nowrap;">
-          <span style="width:7px;height:7px;border-radius:9999px;background:${dotColor};display:inline-block;"></span>
-          <span>${cart.cartCode}</span>
-        </div>`,
-      })
-    );
-    cartMarker.bindPopup(
+    const icon = L.divIcon({
+      className: "angkut-cart-icon",
+      iconSize: [110, 32],
+      iconAnchor: [55, 16],
+      html: `<div style="display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:9999px;background:#09090b;color:#fff;font-size:11px;font-weight:700;box-shadow:0 4px 12px rgba(0,0,0,0.32);border:2px solid ${dotColor};white-space:nowrap;">
+        <span style="width:7px;height:7px;border-radius:9999px;background:${dotColor};display:inline-block;"></span>
+        <span>${cart.cartCode}</span>
+      </div>`,
+    });
+
+    if (!cartMarkerRef.current) {
+      cartMarkerRef.current = L.marker(
+        [cart.coordinates.lat, cart.coordinates.lng],
+        {
+          icon,
+          zIndexOffset: 600,
+        }
+      ).addTo(map);
+    } else {
+      cartMarkerRef.current.setLatLng([
+        cart.coordinates.lat,
+        cart.coordinates.lng,
+      ]);
+      cartMarkerRef.current.setIcon(icon);
+    }
+
+    cartMarkerRef.current.bindPopup(
       `<div style="font-family:sans-serif;font-size:12px;">
         <strong>${cart.cartCode}</strong><br/>
         Posisi: ${cart.currentLocationLabel}<br/>
         Sinkronisasi: ${cart.lastSyncAt}
       </div>`
     );
+
+    if (focusCart) {
+      map.panTo([cart.coordinates.lat, cart.coordinates.lng], {
+        animate: true,
+      });
+    }
   }, [
     cart.cartCode,
-    cart.coordinates.lat,
-    cart.coordinates.lng,
+    cart.coordinates,
     cart.currentLocationLabel,
     cart.lastSyncAt,
     cartWaypointIndex,
+    focusCart,
     isTpsCongested,
     mapReady,
     routeWaypoints,
@@ -180,7 +211,7 @@ export function MerjosariStreetMap({
     group.clearLayers();
 
     const tpsColor = isTpsCongested ? "#e11d48" : "#18181b";
-    L.circle([TPS_MERJOSARI_COORDS.lat, TPS_MERJOSARI_COORDS.lng], {
+    L.circle([tpsCoords.lat, tpsCoords.lng], {
       radius: 20,
       color: tpsColor,
       fillColor: tpsColor,
@@ -188,7 +219,7 @@ export function MerjosariStreetMap({
       weight: 1.5,
     }).addTo(group);
 
-    L.marker([TPS_MERJOSARI_COORDS.lat, TPS_MERJOSARI_COORDS.lng], {
+    L.marker([tpsCoords.lat, tpsCoords.lng], {
       icon: L.divIcon({
         className: "",
         iconSize: [106, 30],
@@ -280,6 +311,8 @@ export function MerjosariStreetMap({
     onBinClick,
     selectBin,
     selectedBinId,
+    tpsCoords.lat,
+    tpsCoords.lng,
   ]);
 
   return (

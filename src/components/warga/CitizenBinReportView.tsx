@@ -12,9 +12,8 @@ import {
   Clock,
   MapPin,
   MessageSquareWarning,
-  Pause,
-  Play,
   QrCode,
+  Radio,
   ShieldAlert,
 } from "lucide-react";
 import { NotFoundView } from "@/components/common/NotFoundView";
@@ -40,8 +39,7 @@ export function CitizenBinReportView({ tsid }: CitizenBinReportViewProps) {
     cart,
     reports,
     isTpsCongested,
-    isCartMoving,
-    toggleCartMoving,
+    iotLive,
   } = useAngkut();
 
   const [sheetTab, setSheetTab] = useState<MobileSheetTab>("riwayat");
@@ -96,11 +94,13 @@ export function CitizenBinReportView({ tsid }: CitizenBinReportViewProps) {
 
   const isOverdue = matchedBin.hoursSinceLastPassed >= 24;
   const binReports = reports.filter((r) => r.binId === matchedBin.id);
-  const distanceToBinMeters = haversineMeters(
-    cart.coordinates,
-    matchedBin.coordinates
-  );
-  const etaToBinMinutes = Math.max(1, Math.round(distanceToBinMeters / 65));
+  const distanceToBinMeters = cart.coordinates
+    ? haversineMeters(cart.coordinates, matchedBin.coordinates)
+    : null;
+  const etaToBinMinutes =
+    distanceToBinMeters !== null
+      ? Math.max(1, Math.round(distanceToBinMeters / 65))
+      : null;
 
   return (
     <div className="min-h-screen bg-zinc-100 sm:flex sm:items-center sm:justify-center sm:py-5">
@@ -115,7 +115,7 @@ export function CitizenBinReportView({ tsid }: CitizenBinReportViewProps) {
           />
         </div>
 
-        {/* Floating Back to Scanner + Tracking & Sticker Controls */}
+        {/* Floating Back to Scanner + IoT Status & Sticker Controls */}
         <div className="pointer-events-none absolute inset-x-3 top-3 z-20 flex items-center justify-between gap-2">
           <button
             type="button"
@@ -127,18 +127,15 @@ export function CitizenBinReportView({ tsid }: CitizenBinReportViewProps) {
           </button>
 
           <div className="pointer-events-auto flex items-center gap-1.5">
-            <button
-              type="button"
-              onClick={toggleCartMoving}
-              title={isCartMoving ? "Jeda pelacakan" : "Lanjutkan pelacakan"}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-zinc-200 bg-white/95 text-zinc-800 shadow-md backdrop-blur hover:bg-white"
-            >
-              {isCartMoving ? (
-                <Pause className="h-3.5 w-3.5" />
-              ) : (
-                <Play className="h-3.5 w-3.5" />
-              )}
-            </button>
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-zinc-200 bg-white/95 px-2.5 py-1.5 text-[11px] font-semibold text-zinc-700 shadow-md backdrop-blur">
+              <Radio
+                className={cn(
+                  "h-3.5 w-3.5",
+                  cart.coordinates ? "text-emerald-600" : "text-zinc-400"
+                )}
+              />
+              <span>{iotLive ? "IoT Live" : cart.coordinates ? "IoT Siaga" : "IoT Offline"}</span>
+            </span>
 
             <button
               type="button"
@@ -161,7 +158,9 @@ export function CitizenBinReportView({ tsid }: CitizenBinReportViewProps) {
                   "h-2 w-2 rounded-full",
                   isTpsCongested
                     ? "bg-rose-500"
-                    : "animate-pulse bg-emerald-400"
+                    : cart.coordinates
+                      ? "animate-pulse bg-emerald-400"
+                      : "bg-zinc-500"
                 )}
               />
               <span className="font-mono">{cart.cartCode}</span>
@@ -169,7 +168,9 @@ export function CitizenBinReportView({ tsid }: CitizenBinReportViewProps) {
               <span>
                 {isTpsCongested
                   ? "Antre di TPS Merjosari"
-                  : `${distanceToBinMeters}m dari tong (~${etaToBinMinutes} mnt)`}
+                  : distanceToBinMeters !== null && etaToBinMinutes !== null
+                    ? `${distanceToBinMeters}m dari tong (~${etaToBinMinutes} mnt)`
+                    : "Menunggu sinyal Mock IoT"}
               </span>
             </div>
           </div>

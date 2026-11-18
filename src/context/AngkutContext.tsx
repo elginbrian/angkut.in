@@ -6,6 +6,7 @@ import React, {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import {
@@ -18,6 +19,7 @@ import {
   MERJOSARI_STREET_PATH,
   TPS_MERJOSARI_COORDS,
 } from "@/data/mock-merjosari";
+import { apiRequest, getWsUrl } from "@/lib/api";
 import {
   evaluateSmartRouting,
   haversineMeters,
@@ -32,6 +34,7 @@ import type {
   GeoQrBin,
   SmartReport,
   SubmitReportPayload,
+  TelemetryResponseMeta,
   TongKuningUnit,
   WhatsAppNotification,
   WorkflowStage,
@@ -47,6 +50,26 @@ export interface BinManagementPayload {
   binCondition: BinCondition;
   binTypeLabel: string;
   monthlyFeeBase: number;
+}
+
+export interface DwellInfo {
+  binId: string | null;
+  seconds: number;
+  targetSeconds: number;
+  checkedIn: boolean;
+}
+
+export interface BackendStatePayload {
+  bins: GeoQrBin[];
+  cart: CartTrackerState;
+  cartDevices: CartDeviceUnit[];
+  reports: SmartReport[];
+  whatsAppLogs: WhatsAppNotification[];
+  tongKuningUnits: TongKuningUnit[];
+  routeWaypoints: Array<[number, number]>;
+  tpsCoords: { lat: number; lng: number };
+  iotLive: boolean;
+  dwellInfo?: DwellInfo;
 }
 
 function generateTsidCode(existingIds: string[]): string {
@@ -75,39 +98,51 @@ interface AngkutContextValue {
   selectedBin: GeoQrBin;
   selectBin: (binId: string) => void;
   routeWaypoints: Array<[number, number]>;
+  tpsCoords: { lat: number; lng: number };
   cartWaypointIndex: number;
-  isCartMoving: boolean;
-  toggleCartMoving: () => void;
-  distanceToSelectedBinMeters: number;
-  etaMinutes: number;
+  distanceToSelectedBinMeters: number | null;
+  etaMinutes: number | null;
   cart: CartTrackerState;
   cartDevices: CartDeviceUnit[];
   reports: SmartReport[];
   whatsAppLogs: WhatsAppNotification[];
   tongKuningUnits: TongKuningUnit[];
   isTpsCongested: boolean;
+  backendConnected: boolean;
+  iotLive: boolean;
+  dwellInfo: DwellInfo;
   toast: ToastMessage | null;
   dismissToast: () => void;
   // Citizen actions
-  submitCitizenReport: (payload: SubmitReportPayload) => SmartReport | null;
+  submitCitizenReport: (payload: SubmitReportPayload) => Promise<SmartReport | null>;
   // RT/RW operational & bin management actions
-  sendManualRtRwWarning: (reportId: string, customNote?: string) => void;
-  resolveReportManually: (reportId: string, note?: string) => void;
-  updateHouseholdBinCompliance: (binId: string, compliant: boolean) => void;
-  addGeoQrBin: (payload: BinManagementPayload) => GeoQrBin;
-  updateGeoQrBin: (binId: string, payload: Partial<BinManagementPayload>) => void;
-  deleteGeoQrBin: (binId: string) => void;
+  sendManualRtRwWarning: (reportId: string, customNote?: string) => Promise<void>;
+  resolveReportManually: (reportId: string, note?: string) => Promise<void>;
+  updateHouseholdBinCompliance: (binId: string, compliant: boolean) => Promise<void>;
+  addGeoQrBin: (payload: BinManagementPayload) => Promise<GeoQrBin | null>;
+  updateGeoQrBin: (binId: string, payload: Partial<BinManagementPayload>) => Promise<void>;
+  deleteGeoQrBin: (binId: string) => Promise<void>;
   // DLH equipment & ticket actions
-  requestTongKuningSpk: (unitIds: string[]) => void;
-  replaceTongKuningUnit: (unitId: string) => void;
+  requestTongKuningSpk: (unitIds: string[]) => Promise<void>;
+  replaceTongKuningUnit: (unitId: string) => Promise<void>;
   updateDlhTicketStage: (
     reportId: string,
     stage: WorkflowStage,
     note?: string
-  ) => void;
-  // IoT & Geofence event triggers
-  simulateCartPassBin: (binId: string) => void;
-  toggleTpsCongestion: (congested: boolean) => void;
+  ) => Promise<void>;
+  // IoT Web Mock telemetry actions
+  sendIotTelemetry: (payload: {
+    cartCode?: string;
+    lat: number;
+    lng: number;
+    batteryPercent?: number;
+    gsmSignal?: string;
+    locationLabel?: string;
+    forceCheckInBinId?: string;
+  }) => Promise<TelemetryResponseMeta | null>;
+  stopIotSession: () => Promise<void>;
+  relocateBinsToCoords: (lat: number, lng: number) => Promise<void>;
+  resetBinCoords: () => Promise<void>;
   counts: {
     openRtRw: number;
     openDlh: number;
@@ -123,8 +158,11 @@ export function AngkutProvider({ children }: { children: React.ReactNode }) {
   const [selectedBinId, setSelectedBinId] = useState<string>(
     INITIAL_GEOQR_BINS[0].id
   );
-  const [cartWaypointIndex, setCartWaypointIndex] = useState<number>(6);
-  const [isCartMoving, setIsCartMoving] = useState<boolean>(true);
+  const [routeWaypoints, setRouteWaypoints] =
+    useState<Array<[number, number]>>(MERJOSARI_STREET_PATH);
+  const [tpsCoords, setTpsCoords] = useState<{ lat: number; lng: number }>(
+    TPS_MERJOSARI_COORDS
+  );
   const [cart, setCart] = useState<CartTrackerState>(INITIAL_CART_STATE);
   const [cartDevices, setCartDevices] =
     useState<CartDeviceUnit[]>(INITIAL_CART_DEVICES);
@@ -135,7 +173,16 @@ export function AngkutProvider({ children }: { children: React.ReactNode }) {
   const [tongKuningUnits, setTongKuningUnits] = useState<TongKuningUnit[]>(
     INITIAL_TONG_KUNING_UNITS
   );
+  const [backendConnected, setBackendConnected] = useState<boolean>(false);
+  const [iotLive, setIotLive] = useState<boolean>(false);
+  const [dwellInfo, setDwellInfo] = useState<DwellInfo>({
+    binId: null,
+    seconds: 0,
+    targetSeconds: 15,
+    checkedIn: false,
+  });
   const [toast, setToast] = useState<ToastMessage | null>(null);
+  const lastIotAlertBinRef = useRef<string | null>(null);
 
   const showToast = useCallback((msg: Omit<ToastMessage, "id">) => {
     setToast({ ...msg, id: `TST-${Date.now()}` });
@@ -151,58 +198,125 @@ export function AngkutProvider({ children }: { children: React.ReactNode }) {
     return () => clearTimeout(timer);
   }, [toast]);
 
-  // Smooth Gojek-style movement of GRB-MRJ-01 along real road waypoints
-  useEffect(() => {
-    if (!isCartMoving || cart.status === "TERTAHAN_DI_TPS") return;
-
-    const interval = setInterval(() => {
-      setCartWaypointIndex((prev) => {
-        const next = prev >= MERJOSARI_STREET_PATH.length - 1 ? 0 : prev + 1;
-        const [lat, lng] = MERJOSARI_STREET_PATH[next];
-
-        const areaLabel =
-          next < 4
-            ? "Jl. Joyosuko Gg. IV (RT 01)"
-            : next < 18
-              ? "Jl. Joyosuko (Rute RT 01)"
-              : next < 30
-                ? "Jl. Joyosuko Timur (Rute RT 02)"
-                : next < 33
-                  ? "Simpang Joyosuko – Akses TPS"
-                  : "TPS Merjosari";
-
-        setCart((c) => ({
-          ...c,
-          coordinates: { lat, lng },
-          currentLocationLabel: areaLabel,
-          lastSyncAt: formatWibTime(),
-        }));
-
-        return next;
-      });
-    }, 2200);
-
-    return () => clearInterval(interval);
-  }, [isCartMoving, cart.status]);
-
-  const toggleCartMoving = useCallback(() => {
-    setIsCartMoving((v) => !v);
+  const applyBackendState = useCallback((data: BackendStatePayload) => {
+    if (Array.isArray(data.bins) && data.bins.length > 0) {
+      setBins(data.bins);
+    }
+    if (data.cart) setCart(data.cart);
+    if (Array.isArray(data.cartDevices)) setCartDevices(data.cartDevices);
+    if (Array.isArray(data.reports)) setReports(data.reports);
+    if (Array.isArray(data.whatsAppLogs)) setWhatsAppLogs(data.whatsAppLogs);
+    if (Array.isArray(data.tongKuningUnits)) setTongKuningUnits(data.tongKuningUnits);
+    if (Array.isArray(data.routeWaypoints) && data.routeWaypoints.length > 0) {
+      setRouteWaypoints(data.routeWaypoints);
+    }
+    if (data.tpsCoords) setTpsCoords(data.tpsCoords);
+    setIotLive(Boolean(data.iotLive));
+    if (data.dwellInfo) {
+      setDwellInfo(data.dwellInfo);
+      if (
+        data.dwellInfo.checkedIn &&
+        data.dwellInfo.binId &&
+        lastIotAlertBinRef.current !== data.dwellInfo.binId
+      ) {
+        lastIotAlertBinRef.current = data.dwellInfo.binId;
+        setToast({
+          id: `TST-${Date.now()}`,
+          tone: "emerald",
+          title: "Auto-Check-In IoT Tercatat",
+          description: `Gerobak berhenti di radius tong selama ${data.dwellInfo.seconds} detik.`,
+        });
+      } else if (!data.dwellInfo.checkedIn) {
+        lastIotAlertBinRef.current = null;
+      }
+    }
+    setBackendConnected(true);
   }, []);
+
+  // Load state from angkutin-be + maintain real-time WebSocket updates
+  useEffect(() => {
+    let active = true;
+    let ws: WebSocket | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+    async function hydrate() {
+      try {
+        const state = await apiRequest<BackendStatePayload>("/state");
+        if (active) applyBackendState(state);
+      } catch {
+        if (active) setBackendConnected(false);
+      }
+    }
+
+    function connectWs() {
+      if (!active || typeof window === "undefined") return;
+      try {
+        ws = new WebSocket(getWsUrl());
+        ws.onopen = () => {
+          if (active) setBackendConnected(true);
+        };
+        ws.onmessage = (event) => {
+          try {
+            const parsed = JSON.parse(event.data);
+            if (parsed?.type === "state_update" && parsed.data && active) {
+              applyBackendState(parsed.data);
+            }
+          } catch {
+            // ignore malformed message
+          }
+        };
+        ws.onclose = () => {
+          if (active) {
+            reconnectTimer = setTimeout(connectWs, 3000);
+          }
+        };
+        ws.onerror = () => {
+          ws?.close();
+        };
+      } catch {
+        if (active) reconnectTimer = setTimeout(connectWs, 4000);
+      }
+    }
+
+    hydrate();
+    connectWs();
+
+    return () => {
+      active = false;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (ws) ws.close();
+    };
+  }, [applyBackendState]);
+
+  const cartWaypointIndex = useMemo(() => {
+    if (!cart.coordinates) return 0;
+    let bestIdx = 0;
+    let bestDist = Infinity;
+    for (let i = 0; i < routeWaypoints.length; i++) {
+      const [wLat, wLng] = routeWaypoints[i];
+      const d = haversineMeters(cart.coordinates, { lat: wLat, lng: wLng });
+      if (d < bestDist) {
+        bestDist = d;
+        bestIdx = i;
+      }
+    }
+    return bestIdx;
+  }, [routeWaypoints, cart.coordinates]);
 
   const selectedBin = useMemo(
     () => bins.find((b) => b.id === selectedBinId) ?? bins[0],
     [bins, selectedBinId]
   );
 
-  const distanceToSelectedBinMeters = useMemo(
-    () => haversineMeters(cart.coordinates, selectedBin.coordinates),
-    [cart.coordinates, selectedBin.coordinates]
-  );
+  const distanceToSelectedBinMeters = useMemo(() => {
+    if (!cart.coordinates) return null;
+    return haversineMeters(cart.coordinates, selectedBin.coordinates);
+  }, [cart.coordinates, selectedBin.coordinates]);
 
-  const etaMinutes = useMemo(
-    () => Math.max(1, Math.round(distanceToSelectedBinMeters / 65)),
-    [distanceToSelectedBinMeters]
-  );
+  const etaMinutes = useMemo(() => {
+    if (distanceToSelectedBinMeters === null) return null;
+    return Math.max(1, Math.round(distanceToSelectedBinMeters / 65));
+  }, [distanceToSelectedBinMeters]);
 
   const isTpsCongested = useMemo(
     () =>
@@ -217,7 +331,38 @@ export function AngkutProvider({ children }: { children: React.ReactNode }) {
 
   // --- CITIZEN ACTIONS ---
   const submitCitizenReport = useCallback(
-    (payload: SubmitReportPayload): SmartReport | null => {
+    async (payload: SubmitReportPayload): Promise<SmartReport | null> => {
+      if (backendConnected) {
+        try {
+          const res = await apiRequest<{
+            ok: boolean;
+            report: SmartReport | null;
+            badgeTone: "emerald" | "rose" | "neutral";
+            state: BackendStatePayload;
+          }>("/reports", {
+            method: "POST",
+            body: JSON.stringify(payload),
+          });
+          applyBackendState(res.state);
+          if (res.report) {
+            showToast({
+              tone: res.badgeTone || "emerald",
+              title: `Tiket ${res.report.ticketCode} Terkirim`,
+              description: `Laporan diteruskan ke ${res.report.escalationLabel}.`,
+            });
+          }
+          return res.report;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : "Gagal mengirim laporan.";
+          showToast({
+            tone: "rose",
+            title: "Laporan Ditolak",
+            description: msg,
+          });
+          return null;
+        }
+      }
+
       const targetBin = bins.find((b) => b.id === payload.binId);
       if (!targetBin) return null;
 
@@ -288,12 +433,34 @@ export function AngkutProvider({ children }: { children: React.ReactNode }) {
 
       return newReport;
     },
-    [bins, cart, showToast]
+    [applyBackendState, backendConnected, bins, cart, showToast]
   );
 
   // --- RT/RW OPERATIONAL ACTIONS ---
   const sendManualRtRwWarning = useCallback(
-    (reportId: string, customNote?: string) => {
+    async (reportId: string, customNote?: string) => {
+      if (backendConnected) {
+        try {
+          const res = await apiRequest<{
+            ok: boolean;
+            recipientRole: string;
+            state: BackendStatePayload;
+          }>(`/reports/${encodeURIComponent(reportId)}/warn`, {
+            method: "POST",
+            body: JSON.stringify({ customNote }),
+          });
+          applyBackendState(res.state);
+          showToast({
+            tone: "emerald",
+            title: "Pesan WhatsApp Terkirim",
+            description: `Notifikasi tindak lanjut dikirim ke ${res.recipientRole}.`,
+          });
+          return;
+        } catch {
+          // fallback
+        }
+      }
+
       const target = reports.find((r) => r.id === reportId);
       if (!target) return;
 
@@ -342,11 +509,32 @@ export function AngkutProvider({ children }: { children: React.ReactNode }) {
         description: `Notifikasi tindak lanjut dikirim ke ${recipientRole}.`,
       });
     },
-    [bins, reports, showToast]
+    [applyBackendState, backendConnected, bins, reports, showToast]
   );
 
   const resolveReportManually = useCallback(
-    (reportId: string, note?: string) => {
+    async (reportId: string, note?: string) => {
+      if (backendConnected) {
+        try {
+          const res = await apiRequest<{ ok: boolean; state: BackendStatePayload }>(
+            `/reports/${encodeURIComponent(reportId)}/resolve`,
+            {
+              method: "POST",
+              body: JSON.stringify({ note }),
+            }
+          );
+          applyBackendState(res.state);
+          showToast({
+            tone: "emerald",
+            title: "Tiket Diselesaikan",
+            description: "Status laporan diperbarui menjadi Selesai.",
+          });
+          return;
+        } catch {
+          // fallback
+        }
+      }
+
       const timeNow = formatWibTime();
       setReports((prev) =>
         prev.map((r) =>
@@ -368,11 +556,36 @@ export function AngkutProvider({ children }: { children: React.ReactNode }) {
         description: "Status laporan diperbarui menjadi Selesai.",
       });
     },
-    [showToast]
+    [applyBackendState, backendConnected, showToast]
   );
 
   const updateHouseholdBinCompliance = useCallback(
-    (binId: string, compliant: boolean) => {
+    async (binId: string, compliant: boolean) => {
+      if (backendConnected) {
+        try {
+          const res = await apiRequest<{ ok: boolean; state: BackendStatePayload }>(
+            `/bins/${encodeURIComponent(binId)}/compliance`,
+            {
+              method: "POST",
+              body: JSON.stringify({ compliant }),
+            }
+          );
+          applyBackendState(res.state);
+          showToast({
+            tone: compliant ? "emerald" : "neutral",
+            title: compliant
+              ? "Tong Hunian Diverifikasi Layak"
+              : "Status Tong Diubah Perlu Perbaikan",
+            description: compliant
+              ? "Potongan iuran bulanan 15% otomatis diaktifkan."
+              : "Potongan iuran dinonaktifkan hingga tong tertutup tersedia.",
+          });
+          return;
+        } catch {
+          // fallback
+        }
+      }
+
       setBins((prev) =>
         prev.map((b) => {
           if (b.id !== binId) return b;
@@ -400,19 +613,45 @@ export function AngkutProvider({ children }: { children: React.ReactNode }) {
           : "Potongan iuran dinonaktifkan hingga tong tertutup tersedia.",
       });
     },
-    [showToast]
+    [applyBackendState, backendConnected, showToast]
   );
 
   const addGeoQrBin = useCallback(
-    (payload: BinManagementPayload): GeoQrBin => {
+    async (payload: BinManagementPayload): Promise<GeoQrBin | null> => {
+      if (backendConnected) {
+        try {
+          const res = await apiRequest<{
+            ok: boolean;
+            bin: GeoQrBin;
+            state: BackendStatePayload;
+          }>("/bins", {
+            method: "POST",
+            body: JSON.stringify(payload),
+          });
+          applyBackendState(res.state);
+          showToast({
+            tone: "emerald",
+            title: "Titik Tong Baru Ditambahkan",
+            description: `${res.bin.name} (${res.bin.id}) tersimpan di database.`,
+          });
+          return res.bin;
+        } catch (err) {
+          showToast({
+            tone: "rose",
+            title: "Gagal Menambah Tong",
+            description: err instanceof Error ? err.message : "Error backend",
+          });
+          return null;
+        }
+      }
+
       const existingIds = bins.map((b) => b.id);
       const newId = generateTsidCode(existingIds);
       const waypointIdx =
-        (bins.length * 7 + 4) % (MERJOSARI_STREET_PATH.length - 2);
-      const [lat, lng] = MERJOSARI_STREET_PATH[waypointIdx];
+        (bins.length * 7 + 4) % Math.max(1, routeWaypoints.length - 2);
+      const [lat, lng] = routeWaypoints[waypointIdx] ?? routeWaypoints[0];
       const incentiveEligible =
         payload.binCondition === "TERTUTUP_LAYAK" && payload.monthlyFeeBase > 0;
-      const discountPercent = incentiveEligible ? 15 : 0;
 
       const newBin: GeoQrBin = {
         id: newId,
@@ -434,7 +673,7 @@ export function AngkutProvider({ children }: { children: React.ReactNode }) {
         binCondition: payload.binCondition,
         binTypeLabel: payload.binTypeLabel.trim(),
         incentiveEligible,
-        discountPercent,
+        discountPercent: incentiveEligible ? 15 : 0,
         monthlyFeeBase: payload.monthlyFeeBase,
         pickupHistory: [],
       };
@@ -447,11 +686,32 @@ export function AngkutProvider({ children }: { children: React.ReactNode }) {
       });
       return newBin;
     },
-    [bins, showToast]
+    [applyBackendState, backendConnected, bins, routeWaypoints, showToast]
   );
 
   const updateGeoQrBin = useCallback(
-    (binId: string, payload: Partial<BinManagementPayload>) => {
+    async (binId: string, payload: Partial<BinManagementPayload>) => {
+      if (backendConnected) {
+        try {
+          const res = await apiRequest<{ ok: boolean; state: BackendStatePayload }>(
+            `/bins/${encodeURIComponent(binId)}`,
+            {
+              method: "PATCH",
+              body: JSON.stringify(payload),
+            }
+          );
+          applyBackendState(res.state);
+          showToast({
+            tone: "emerald",
+            title: "Data Tong Sampah Diperbarui",
+            description: "Perubahan titik lokasi & stiker QR telah disimpan.",
+          });
+          return;
+        } catch {
+          // fallback
+        }
+      }
+
       setBins((prev) =>
         prev.map((b) => {
           if (b.id !== binId) return b;
@@ -498,11 +758,34 @@ export function AngkutProvider({ children }: { children: React.ReactNode }) {
         description: "Perubahan titik lokasi & stiker QR telah disimpan.",
       });
     },
-    [showToast]
+    [applyBackendState, backendConnected, showToast]
   );
 
   const deleteGeoQrBin = useCallback(
-    (binId: string) => {
+    async (binId: string) => {
+      if (backendConnected) {
+        try {
+          const res = await apiRequest<{ ok: boolean; state: BackendStatePayload }>(
+            `/bins/${encodeURIComponent(binId)}`,
+            { method: "DELETE" }
+          );
+          applyBackendState(res.state);
+          showToast({
+            tone: "neutral",
+            title: "Titik Tong Dihapus",
+            description: "Titik tempat sampah telah dihapus.",
+          });
+          return;
+        } catch (err) {
+          showToast({
+            tone: "rose",
+            title: "Tidak Dapat Menghapus",
+            description: err instanceof Error ? err.message : "Gagal menghapus",
+          });
+          return;
+        }
+      }
+
       if (bins.length <= 1) {
         showToast({
           tone: "rose",
@@ -524,13 +807,34 @@ export function AngkutProvider({ children }: { children: React.ReactNode }) {
         description: "Titik tempat sampah telah dihapus dari daftar wilayah.",
       });
     },
-    [bins, selectedBinId, showToast]
+    [applyBackendState, backendConnected, bins, selectedBinId, showToast]
   );
 
   // --- DLH EQUIPMENT & TICKET ACTIONS ---
   const requestTongKuningSpk = useCallback(
-    (unitIds: string[]) => {
+    async (unitIds: string[]) => {
       if (unitIds.length === 0) return;
+      if (backendConnected) {
+        try {
+          const res = await apiRequest<{ ok: boolean; state: BackendStatePayload }>(
+            "/tong-kuning/request-spk",
+            {
+              method: "POST",
+              body: JSON.stringify({ unitIds }),
+            }
+          );
+          applyBackendState(res.state);
+          showToast({
+            tone: "emerald",
+            title: "Pengajuan Penggantian Alat Dibuat",
+            description: `${unitIds.length} unit tong kuning masuk daftar pengajuan perbaikan/penggantian DLH.`,
+          });
+          return;
+        } catch {
+          // fallback
+        }
+      }
+
       setTongKuningUnits((prev) =>
         prev.map((u) =>
           unitIds.includes(u.id) ? { ...u, spkStatus: "DIAJUKAN_SPK" } : u
@@ -542,11 +846,29 @@ export function AngkutProvider({ children }: { children: React.ReactNode }) {
         description: `${unitIds.length} unit tong kuning masuk daftar pengajuan perbaikan/penggantian DLH.`,
       });
     },
-    [showToast]
+    [applyBackendState, backendConnected, showToast]
   );
 
   const replaceTongKuningUnit = useCallback(
-    (unitId: string) => {
+    async (unitId: string) => {
+      if (backendConnected) {
+        try {
+          const res = await apiRequest<{ ok: boolean; state: BackendStatePayload }>(
+            `/tong-kuning/${encodeURIComponent(unitId)}/replace`,
+            { method: "POST" }
+          );
+          applyBackendState(res.state);
+          showToast({
+            tone: "emerald",
+            title: "Kondisi Alat Diperbarui",
+            description: "Unit tong kuning berstatus Layak Pakai.",
+          });
+          return;
+        } catch {
+          // fallback
+        }
+      }
+
       setTongKuningUnits((prev) =>
         prev.map((u) =>
           u.id === unitId
@@ -566,11 +888,32 @@ export function AngkutProvider({ children }: { children: React.ReactNode }) {
         description: "Unit tong kuning berstatus Layak Pakai.",
       });
     },
-    [showToast]
+    [applyBackendState, backendConnected, showToast]
   );
 
   const updateDlhTicketStage = useCallback(
-    (reportId: string, stage: WorkflowStage, note?: string) => {
+    async (reportId: string, stage: WorkflowStage, note?: string) => {
+      if (backendConnected) {
+        try {
+          const res = await apiRequest<{ ok: boolean; state: BackendStatePayload }>(
+            `/reports/${encodeURIComponent(reportId)}/dlh-stage`,
+            {
+              method: "PATCH",
+              body: JSON.stringify({ stage, note }),
+            }
+          );
+          applyBackendState(res.state);
+          showToast({
+            tone: "emerald",
+            title: "Status Tiket DLH Diperbarui",
+            description: `Tahap penanganan diubah ke ${stage}.`,
+          });
+          return;
+        } catch {
+          // fallback
+        }
+      }
+
       const timeNow = formatWibTime();
       setReports((prev) =>
         prev.map((r) =>
@@ -593,161 +936,81 @@ export function AngkutProvider({ children }: { children: React.ReactNode }) {
         description: `Tahap penanganan diubah ke ${stage}.`,
       });
     },
-    [showToast]
+    [applyBackendState, backendConnected, showToast]
   );
 
-  // --- IOT GEOFENCE CHECK-IN & AUTO-RESOLVE ---
-  const simulateCartPassBin = useCallback(
-    (binId: string) => {
-      const targetBin = bins.find((b) => b.id === binId);
-      if (!targetBin) return;
-
-      const timeNow = formatWibTime();
-      const shortTime = timeNow.replace(" WIB", "");
-      const simulatedDwell = 36 + Math.floor(Math.random() * 14);
-      const simulatedDist = Number((2.8 + Math.random() * 3.4).toFixed(1));
-
-      setCartWaypointIndex(targetBin.waypointIndex);
-
-      setBins((prev) =>
-        prev.map((bin) => {
-          if (bin.id !== binId) return bin;
-          const previousTodayEntry =
-            bin.hoursSinceLastPassed < 24
-              ? [
-                  {
-                    id: `LOG-${Date.now()}`,
-                    timestamp: bin.lastPassedAt.replace("Hari ini, ", ""),
-                    dateLabel: "Sebelumnya",
-                    dwellSeconds: bin.lastDwellSeconds,
-                    distanceMeters: bin.lastDistanceMeters,
-                    cartCode: bin.assignedCartCode,
-                  },
-                ]
-              : [];
-
-          return {
-            ...bin,
-            lastPassedAt: `Hari ini, ${timeNow}`,
-            hoursSinceLastPassed: 0,
-            lastDwellSeconds: simulatedDwell,
-            lastDistanceMeters: simulatedDist,
-            pickupHistory: [...previousTodayEntry, ...bin.pickupHistory],
-          };
-        })
-      );
-
-      setCart((prev) => ({
-        ...prev,
-        status: "BERKELILING_RUTE",
-        currentBinId: binId,
-        currentLocationLabel: `${targetBin.name} (${targetBin.rt})`,
-        coordinates: targetBin.coordinates,
-        tpsWaitDurationMinutes: 12,
-        lastSyncAt: timeNow,
-      }));
-
-      setCartDevices((prev) =>
-        prev.map((d) =>
-          d.cartCode === cart.cartCode
-            ? {
-                ...d,
-                lastSyncAt: "Baru saja",
-                geofenceTriggerCountToday: d.geofenceTriggerCountToday + 1,
-              }
-            : d
-        )
-      );
-
-      const activeReportsOnBin = reports.filter(
-        (r) => r.binId === binId && r.workflowStage !== "SELESAI"
-      );
-
-      if (activeReportsOnBin.length > 0) {
-        setReports((prev) =>
-          prev.map((r) =>
-            r.binId === binId && r.workflowStage !== "SELESAI"
-              ? {
-                  ...r,
-                  status: "SELESAI_AUTO_RESOLVE",
-                  workflowStage: "SELESAI",
-                  resolvedAt: `Hari ini, ${timeNow}`,
-                  adminActionNote: `Auto-Resolve: Sensor ${cart.cartCode} berhenti ${simulatedDwell} detik (${simulatedDist}m).`,
-                }
-              : r
-          )
-        );
-
-        const autoResolveNotifs: WhatsAppNotification[] =
-          activeReportsOnBin.map((rep, idx) => ({
-            id: `WA-RES-${Date.now()}-${idx}`,
-            recipientRole: `Warga & Pengurus ${targetBin.rt}`,
-            recipientPhone: "+62 856-4800-1190",
-            timestamp: shortTime,
-            messageType: "AUTO_RESOLVE",
-            relatedBinId: binId,
-            relatedReportId: rep.id,
-            content: `*[ANGKUT.IN • AUTO-RESOLVE]*\nTiket ${rep.ticketCode} pada ${targetBin.name} otomatis ditutup.\n\n✅ Sensor *${cart.cartCode}* terdeteksi berhenti ${simulatedDwell} detik (jarak ${simulatedDist}m) pukul ${timeNow}.`,
-          }));
-
-        setWhatsAppLogs((prev) => [...autoResolveNotifs, ...prev]);
-
-        showToast({
-          tone: "emerald",
-          title: `Auto-Check-In & Auto-Resolve`,
-          description: `${cart.cartCode} tiba di ${targetBin.shortLabel} (${simulatedDwell} dtk). ${activeReportsOnBin.length} tiket otomatis selesai.`,
+  // --- WEB MOCK IOT TELEMETRY ACTIONS ---
+  const sendIotTelemetry = useCallback(
+    async (payload: {
+      cartCode?: string;
+      lat: number;
+      lng: number;
+      batteryPercent?: number;
+      gsmSignal?: string;
+      locationLabel?: string;
+      forceCheckInBinId?: string;
+    }): Promise<TelemetryResponseMeta | null> => {
+      try {
+        const res = await apiRequest<{
+          ok: boolean;
+          meta: TelemetryResponseMeta;
+          state: BackendStatePayload;
+        }>("/iot/telemetry", {
+          method: "POST",
+          body: JSON.stringify(payload),
         });
-      } else {
-        showToast({
-          tone: "emerald",
-          title: `${cart.cartCode} Tiba di ${targetBin.shortLabel}`,
-          description: `Check-in geofence pasif tercatat (${simulatedDwell} detik, jarak ${simulatedDist}m).`,
-        });
+        applyBackendState(res.state);
+        return res.meta;
+      } catch {
+        return null;
       }
     },
-    [bins, cart.cartCode, reports, showToast]
+    [applyBackendState]
   );
 
-  const toggleTpsCongestion = useCallback(
-    (congested: boolean) => {
-      const timeNow = formatWibTime();
+  const stopIotSession = useCallback(async () => {
+    try {
+      const res = await apiRequest<{ ok: boolean; state: BackendStatePayload }>(
+        "/iot/stop",
+        { method: "POST" }
+      );
+      applyBackendState(res.state);
+    } catch {
+      // ignore if offline
+    }
+  }, [applyBackendState]);
 
-      if (congested) {
-        setCartWaypointIndex(MERJOSARI_STREET_PATH.length - 1);
-        setCart((prev) => ({
-          ...prev,
-          status: "TERTAHAN_DI_TPS",
-          currentBinId: "TPS-MERJOSARI",
-          currentLocationLabel: "Antre Bongkar Muat di TPS Merjosari",
-          coordinates: TPS_MERJOSARI_COORDS,
-          tpsWaitDurationMinutes: 95,
-          lastSyncAt: timeNow,
-        }));
-        showToast({
-          tone: "rose",
-          title: "Antrean TPS Merjosari Terdeteksi",
-          description: `${cart.cartCode} tertahan 95 menit di area TPS Merjosari.`,
-        });
-      } else {
-        setCartWaypointIndex(6);
-        setCart((prev) => ({
-          ...prev,
-          status: "BERKELILING_RUTE",
-          currentBinId: INITIAL_CART_STATE.currentBinId,
-          currentLocationLabel: INITIAL_CART_STATE.currentLocationLabel,
-          coordinates: INITIAL_CART_STATE.coordinates,
-          tpsWaitDurationMinutes: 12,
-          lastSyncAt: timeNow,
-        }));
-        showToast({
-          tone: "emerald",
-          title: "Gerobak Kembali ke Rute",
-          description: `${cart.cartCode} kembali berkeliling rute RW 12.`,
-        });
-      }
+  const relocateBinsToCoords = useCallback(
+    async (lat: number, lng: number) => {
+      const res = await apiRequest<{ ok: boolean; state: BackendStatePayload }>(
+        "/iot/relocate-bins",
+        {
+          method: "POST",
+          body: JSON.stringify({ lat, lng }),
+        }
+      );
+      applyBackendState(res.state);
+      showToast({
+        tone: "emerald",
+        title: "Titik Tong Dipindahkan ke Sekitar Anda",
+        description: "Sekarang Anda dapat menguji geofencing & auto-check-in dari lokasi GPS Anda.",
+      });
     },
-    [cart.cartCode, showToast]
+    [applyBackendState, showToast]
   );
+
+  const resetBinCoords = useCallback(async () => {
+    const res = await apiRequest<{ ok: boolean; state: BackendStatePayload }>(
+      "/iot/reset-coords",
+      { method: "POST" }
+    );
+    applyBackendState(res.state);
+    showToast({
+      tone: "neutral",
+      title: "Koordinat Direset",
+      description: "Seluruh titik kembali ke peta Jl. Joyosuko Merjosari.",
+    });
+  }, [applyBackendState, showToast]);
 
   const counts = useMemo(
     () => ({
@@ -775,10 +1038,9 @@ export function AngkutProvider({ children }: { children: React.ReactNode }) {
     selectedBinId,
     selectedBin,
     selectBin,
-    routeWaypoints: MERJOSARI_STREET_PATH,
+    routeWaypoints,
+    tpsCoords,
     cartWaypointIndex,
-    isCartMoving,
-    toggleCartMoving,
     distanceToSelectedBinMeters,
     etaMinutes,
     cart,
@@ -787,6 +1049,9 @@ export function AngkutProvider({ children }: { children: React.ReactNode }) {
     whatsAppLogs,
     tongKuningUnits,
     isTpsCongested,
+    backendConnected,
+    iotLive,
+    dwellInfo,
     toast,
     dismissToast,
     submitCitizenReport,
@@ -799,8 +1064,10 @@ export function AngkutProvider({ children }: { children: React.ReactNode }) {
     requestTongKuningSpk,
     replaceTongKuningUnit,
     updateDlhTicketStage,
-    simulateCartPassBin,
-    toggleTpsCongestion,
+    sendIotTelemetry,
+    stopIotSession,
+    relocateBinsToCoords,
+    resetBinCoords,
     counts,
   };
 

@@ -11,6 +11,8 @@ import {
 } from "lucide-react";
 import { useAngkut } from "@/context/AngkutContext";
 import { PHOTO_EVIDENCE_PRESETS } from "@/data/mock-merjosari";
+import { apiRequest, resolveMediaUrl } from "@/lib/api";
+import { haversineMeters } from "@/lib/smart-routing";
 import { cn, REPORT_CATEGORY_OPTIONS } from "@/lib/utils";
 import type { GeoQrBin, ReportCategory, SmartReport } from "@/types/angkut";
 
@@ -21,7 +23,7 @@ interface ReportIssueSheetProps {
 }
 
 export function ReportIssueSheet({ open, onClose, bin }: ReportIssueSheetProps) {
-  const { selectedBin, submitCitizenReport } = useAngkut();
+  const { selectedBin, submitCitizenReport, backendConnected } = useAngkut();
   const targetBin = bin ?? selectedBin;
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -42,37 +44,102 @@ export function ReportIssueSheet({ open, onClose, bin }: ReportIssueSheetProps) 
   const [photoUrl, setPhotoUrl] = useState<string>(
     PHOTO_EVIDENCE_PRESETS[0].url
   );
+  const [isUploading, setIsUploading] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const [gpsMode, setGpsMode] = useState<"simulated" | "device">("simulated");
+  const [deviceCoords, setDeviceCoords] = useState<{
+    lat: number;
+    lng: number;
+  } | null>(null);
+  const [deviceDistMeters, setDeviceDistMeters] = useState<number | null>(null);
+  const [gpsLoading, setGpsLoading] = useState(false);
+  const [gpsNote, setGpsNote] = useState<string | null>(null);
+
   const [submittedReport, setSubmittedReport] = useState<SmartReport | null>(
     null
   );
 
   if (!open) return null;
 
-  // Citizen scanned the physical QR sticker on site (~8m from bin)
-  const verifiedDistanceMeters = 8;
+  const verifiedDistanceMeters =
+    gpsMode === "device" && deviceDistMeters !== null ? deviceDistMeters : 8;
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const objectUrl = URL.createObjectURL(file);
-    setPhotoLabel(file.name);
-    setPhotoUrl(objectUrl);
+  const handleUseDeviceGps = () => {
+    setGpsNote(null);
+    if (!("geolocation" in navigator)) {
+      setGpsNote("Perangkat tidak mendukung GPS browser.");
+      return;
+    }
+    setGpsLoading(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        const d = haversineMeters(coords, targetBin.coordinates);
+        setDeviceCoords(coords);
+        setDeviceDistMeters(d);
+        setGpsMode("device");
+        setGpsLoading(false);
+      },
+      (err) => {
+        setGpsLoading(false);
+        setGpsNote(`Izin GPS gagal: ${err.message}`);
+      },
+      { enableHighAccuracy: true, timeout: 8000 }
+    );
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const previewUrl = URL.createObjectURL(file);
+    setPhotoLabel(file.name);
+    setPhotoUrl(previewUrl);
+
+    if (backendConnected) {
+      setIsUploading(true);
+      try {
+        const formData = new FormData();
+        formData.append("file", file);
+        const res = await apiRequest<{ url: string; fileName: string }>(
+          "/uploads",
+          {
+            method: "POST",
+            body: formData,
+          }
+        );
+        setPhotoUrl(res.url);
+        setPhotoLabel(res.fileName);
+      } catch {
+        // Keep local object URL preview if upload fails
+      } finally {
+        setIsUploading(false);
+      }
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const res = submitCitizenReport({
-      binId: targetBin.id,
-      category,
-      description:
-        description.trim() ||
-        `Laporan kondisi ${targetBin.name} melalui pemindaian GeoQR.`,
-      photoLabel,
-      photoUrl,
-      reporterDistanceMeters: verifiedDistanceMeters,
-    });
-    if (res) {
-      setSubmittedReport(res);
+    setIsSubmitting(true);
+    try {
+      const res = await submitCitizenReport({
+        binId: targetBin.id,
+        category,
+        description:
+          description.trim() ||
+          `Laporan kondisi ${targetBin.name} melalui pemindaian GeoQR.`,
+        photoLabel,
+        photoUrl,
+        reporterDistanceMeters: verifiedDistanceMeters,
+        reporterLat: gpsMode === "device" ? deviceCoords?.lat : undefined,
+        reporterLng: gpsMode === "device" ? deviceCoords?.lng : undefined,
+      });
+      if (res) {
+        setSubmittedReport(res);
+      }
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -81,6 +148,8 @@ export function ReportIssueSheet({ open, onClose, bin }: ReportIssueSheetProps) 
     setDescription("");
     onClose();
   };
+
+  const outOfRadius = gpsMode === "device" && verifiedDistanceMeters > 50;
 
   return (
     <div
@@ -133,11 +202,46 @@ export function ReportIssueSheet({ open, onClose, bin }: ReportIssueSheetProps) 
           </div>
         ) : (
           <form onSubmit={handleSubmit} className="space-y-4 p-5">
-            <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50/70 px-3.5 py-2.5 text-xs text-emerald-900">
-              <LocateFixed className="h-4 w-4 shrink-0 text-emerald-600" />
-              <span>
-                Lokasi terverifikasi ({verifiedDistanceMeters}m dari titik tong)
-              </span>
+            <div
+              className={cn(
+                "rounded-xl border px-3.5 py-2.5 text-xs",
+                outOfRadius
+                  ? "border-rose-200 bg-rose-50 text-rose-900"
+                  : "border-emerald-200 bg-emerald-50/70 text-emerald-900"
+              )}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="flex items-center gap-2">
+                  <LocateFixed
+                    className={cn(
+                      "h-4 w-4 shrink-0",
+                      outOfRadius ? "text-rose-600" : "text-emerald-600"
+                    )}
+                  />
+                  <span>
+                    {gpsLoading
+                      ? "Mengambil GPS..."
+                      : outOfRadius
+                        ? `Di luar radius (${verifiedDistanceMeters}m > 50m)`
+                        : `Lokasi terverifikasi (${verifiedDistanceMeters}m dari tong)`}
+                  </span>
+                </span>
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    gpsMode === "device"
+                      ? setGpsMode("simulated")
+                      : handleUseDeviceGps()
+                  }
+                  className="shrink-0 font-semibold underline"
+                >
+                  {gpsMode === "device" ? "Pakai Scan QR (8m)" : "Uji GPS HP"}
+                </button>
+              </div>
+              {gpsNote && (
+                <p className="mt-1 text-[10.5px] text-rose-700">{gpsNote}</p>
+              )}
             </div>
 
             <div className="space-y-2">
@@ -185,7 +289,9 @@ export function ReportIssueSheet({ open, onClose, bin }: ReportIssueSheetProps) 
                   className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 hover:underline"
                 >
                   <Upload className="h-3 w-3" />
-                  <span>Ambil / Pilih Foto</span>
+                  <span>
+                    {isUploading ? "Mengunggah..." : "Ambil / Pilih Foto"}
+                  </span>
                 </button>
                 <input
                   ref={fileInputRef}
@@ -200,7 +306,7 @@ export function ReportIssueSheet({ open, onClose, bin }: ReportIssueSheetProps) 
               <div className="overflow-hidden rounded-xl border border-zinc-200 bg-zinc-50">
                 {/* eslint-disable-next-line @next/next/img-element */}
                 <img
-                  src={photoUrl}
+                  src={resolveMediaUrl(photoUrl)}
                   alt={photoLabel}
                   className="h-32 w-full object-cover"
                 />
@@ -251,10 +357,11 @@ export function ReportIssueSheet({ open, onClose, bin }: ReportIssueSheetProps) 
 
             <button
               type="submit"
-              className="flex w-full items-center justify-center gap-2 rounded-xl bg-zinc-900 py-3 text-xs font-semibold text-white hover:bg-zinc-800"
+              disabled={isSubmitting || isUploading}
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-zinc-900 py-3 text-xs font-semibold text-white hover:bg-zinc-800 disabled:opacity-60"
             >
               <Send className="h-3.5 w-3.5" />
-              <span>Kirim Laporan</span>
+              <span>{isSubmitting ? "Mengirim..." : "Kirim Laporan"}</span>
             </button>
           </form>
         )}

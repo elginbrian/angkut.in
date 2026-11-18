@@ -8,8 +8,6 @@ import {
   Cpu,
   FileCheck2,
   MapPin,
-  Pause,
-  Play,
   Radio,
   Signal,
   Wrench,
@@ -17,6 +15,7 @@ import {
 } from "lucide-react";
 import { MerjosariStreetMap } from "@/components/map/MerjosariStreetMap";
 import { useAngkut } from "@/context/AngkutContext";
+import { resolveMediaUrl } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type { TongKuningCondition } from "@/types/angkut";
 
@@ -27,8 +26,7 @@ export function DlhPortalApp() {
   const {
     cart,
     isTpsCongested,
-    isCartMoving,
-    toggleCartMoving,
+    iotLive,
     reports,
     cartDevices,
     tongKuningUnits,
@@ -206,23 +204,23 @@ export function DlhPortalApp() {
                     </h2>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={toggleCartMoving}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-200 px-3 py-1.5 text-xs font-semibold text-zinc-700 hover:bg-zinc-50"
-                  >
-                    {isCartMoving ? (
-                      <>
-                        <Pause className="h-3.5 w-3.5" />
-                        <span>Jeda Live Tracker</span>
-                      </>
-                    ) : (
-                      <>
-                        <Play className="h-3.5 w-3.5" />
-                        <span>Jalankan Live Tracker</span>
-                      </>
-                    )}
-                  </button>
+                  <span className="inline-flex items-center gap-1.5 rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[11px] font-semibold text-zinc-700">
+                    <span
+                      className={cn(
+                        "h-2 w-2 rounded-full",
+                        cart.coordinates
+                          ? iotLive
+                            ? "animate-pulse bg-emerald-500"
+                            : "bg-emerald-500"
+                          : "bg-zinc-400"
+                      )}
+                    />
+                    <span>
+                      {cart.coordinates
+                        ? "Terhubung ke Sinyal Mock IoT"
+                        : "Menunggu Sinyal Web Mock IoT"}
+                    </span>
+                  </span>
                 </div>
 
                 <MerjosariStreetMap heightClass="h-72" />
@@ -545,7 +543,7 @@ export function DlhPortalApp() {
               <div className="overflow-hidden rounded-2xl border border-zinc-200">
                 {/* eslint-disable-next-line @next/next/img-element */}
                 <img
-                  src={drawerReport.photoUrl}
+                  src={resolveMediaUrl(drawerReport.photoUrl)}
                   alt={drawerReport.photoLabel}
                   className="h-44 w-full object-cover"
                 />

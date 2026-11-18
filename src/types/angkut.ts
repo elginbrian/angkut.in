@@ -1,4 +1,5 @@
 export type CartOperationalStatus =
+  | "MENUNGGU_IOT"
   | "BERKELILING_RUTE"
   | "TERTAHAN_DI_TPS"
   | "SELESAI_BEROPERASI";
@@ -74,7 +75,7 @@ export interface CartTrackerState {
   coordinates: {
     lat: number;
     lng: number;
-  };
+  } | null;
   tpsWaitDurationMinutes: number;
   ritaseToday: number;
   batteryPercent: number;
@@ -160,4 +161,16 @@ export interface SubmitReportPayload {
   photoLabel: string;
   photoUrl: string;
   reporterDistanceMeters: number;
+  reporterLat?: number;
+  reporterLng?: number;
+}
+
+export interface TelemetryResponseMeta {
+  nearestBinId: string | null;
+  nearestBinName: string | null;
+  distanceToNearestBinMeters: number | null;
+  dwellSeconds: number;
+  dwellTargetSeconds: number;
+  autoCheckInTriggered: boolean;
+  autoResolvedCount: number;
 }

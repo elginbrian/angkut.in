@@ -6,6 +6,14 @@ import { ArrowUpRight, Camera, QrCode } from "lucide-react";
 import { useAngkut } from "@/context/AngkutContext";
 import { cn } from "@/lib/utils";
 
+interface DetectedBarcode {
+  rawValue?: string;
+}
+
+interface BarcodeDetectorInstance {
+  detect: (source: HTMLVideoElement) => Promise<DetectedBarcode[]>;
+}
+
 export function CitizenScanApp() {
   const router = useRouter();
   const { bins, selectBin } = useAngkut();
@@ -28,9 +36,54 @@ export function CitizenScanApp() {
     return () => stopCamera();
   }, []);
 
+  const handleScanBin = React.useCallback(
+    (binId: string) => {
+      setScanningBinId(binId);
+      setTimeout(() => {
+        selectBin(binId);
+        setScanningBinId(null);
+        stopCamera();
+        router.push(`/${encodeURIComponent(binId)}`);
+      }, 350);
+    },
+    [router, selectBin]
+  );
+
+  // Real browser BarcodeDetector scanning when camera is enabled
+  useEffect(() => {
+    if (!cameraActive || scanningBinId) return;
+    const win = window as unknown as {
+      BarcodeDetector?: new (opts: {
+        formats: string[];
+      }) => BarcodeDetectorInstance;
+    };
+    if (!win.BarcodeDetector) return;
+
+    const detector = new win.BarcodeDetector({ formats: ["qr_code"] });
+    const interval = setInterval(async () => {
+      if (!videoRef.current || videoRef.current.readyState < 2) return;
+      try {
+        const codes = await detector.detect(videoRef.current);
+        const raw = codes[0]?.rawValue?.trim();
+        if (!raw) return;
+        const match = raw.match(/(tsid-[a-z]{8})/i);
+        if (match?.[1]) {
+          handleScanBin(match[1].toLowerCase());
+        }
+      } catch {
+        // ignore transient detection frame errors
+      }
+    }, 500);
+
+    return () => clearInterval(interval);
+  }, [cameraActive, handleScanBin, scanningBinId]);
+
   const handleEnableCamera = async () => {
     setCameraError(null);
-    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+    if (
+      typeof navigator === "undefined" ||
+      !navigator.mediaDevices?.getUserMedia
+    ) {
       setCameraError("Kamera browser tidak tersedia pada perangkat ini.");
       return;
     }
@@ -46,18 +99,10 @@ export function CitizenScanApp() {
         }
       }, 60);
     } catch {
-      setCameraError("Izin kamera ditolak. Pilih stiker QR di bawah untuk memindai.");
+      setCameraError(
+        "Izin kamera ditolak. Pilih stiker QR di bawah untuk memindai."
+      );
     }
-  };
-
-  const handleScanBin = (binId: string) => {
-    setScanningBinId(binId);
-    setTimeout(() => {
-      selectBin(binId);
-      setScanningBinId(null);
-      stopCamera();
-      router.push(`/${encodeURIComponent(binId)}`);
-    }, 350);
   };
 
   return (
